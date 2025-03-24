@@ -7,3 +7,6 @@ add_subdirectory(3rd_party)
 
 add_executable(GLparticle main_gl.cpp)
 target_link_libraries(GLparticle PRIVATE sokol HandmadeMath)
+
+add_executable(DXparticle main_dx.cpp)
+target_link_libraries(DXparticle PRIVATE sokol HandmadeMath)
