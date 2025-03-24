@@ -5,5 +5,5 @@ set(CMAKE_CXX_STANDARD 20)
 
 add_subdirectory(3rd_party)
 
-add_executable(test main.cpp)
-target_link_libraries(test PRIVATE sokol)
+add_executable(GLparticle main_gl.cpp)
+target_link_libraries(GLparticle PRIVATE sokol HandmadeMath)
