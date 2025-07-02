@@ -61,7 +61,7 @@ void init() {
         }
 
         sg_buffer_desc _sg_buffer_desc{};
-        _sg_buffer_desc.type = SG_BUFFERTYPE_STORAGEBUFFER;
+        _sg_buffer_desc.usage.storage_buffer = true;
         _sg_buffer_desc.data.ptr = particles.data();
         _sg_buffer_desc.data.size = sizeof(particle_t) * PARTICLE_COUNT;
         _sg_buffer_desc.label = "particle-buffer";
