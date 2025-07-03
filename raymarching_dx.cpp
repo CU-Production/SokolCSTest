@@ -1,3 +1,6 @@
+// based on iq's raymarching demo
+// https://www.shadertoy.com/view/Xds3zN
+
 #define SOKOL_IMPL
 #define SOKOL_NO_ENTRY
 #define SOKOL_D3D11
@@ -9,13 +12,16 @@
 #include "HandmadeMath.h"
 
 #include <vector>
+#include <fstream>
+#include <iostream>
 
 constexpr uint32_t SCREEN_WIDTH = 800;
 constexpr uint32_t SCREEN_HEIGHT = 600;
 
 struct cs_params_t{
-    float time;
-    HMM_Vec2 img_size;
+    HMM_Vec2 iTime;
+    HMM_Vec2 iResolution;
+    HMM_Vec4 iMouse;
 };
 
 struct particle_t{
@@ -59,95 +65,19 @@ void init() {
         _sg_attachments_desc.label = "noise-attachments";
         state.compute.atts = sg_make_attachments(&_sg_attachments_desc);
 
+        std::ifstream file("raymarching_dx.hlsl", std::ios::ate);
+        if (!file.is_open()) {
+            std::cerr << "Could not open file " << __FILE__ << " at line " << __LINE__ << std::endl;
+            std::exit(1);
+        }
+        size_t file_size = (size_t)file.tellg();
+        std::vector<char> file_content(file_size);
+        file.seekg(0);
+        file.read(file_content.data(), file_size);
+        file.close();
+
         sg_shader_desc _sg_compute_shader_desc{};
-        _sg_compute_shader_desc.compute_func.source = R"(
-cbuffer params: register(b0) {
-  float time;
-  float2 img_size;
-};
-
-RWTexture2D<float4> cs_out_tex: register(u0);
-
-float iPlane(in float3 ro, in float3 rd) {
-  return -ro.y/rd.y;
-}
-
-float3 nPlane(in float3 pos) {
-  return float3(0.0f, 1.0f, 0.0f);
-}
-
-float iSphere(in float3 ro, in float3 rd, in float4 sph) {
-  float r = sph.w;
-  float3 oc = ro - sph.xyz;
-  float b = 2.0f * dot(oc, rd);
-  float c = dot(oc, oc) - r*r;
-  float h = b*b - 4.0*c;
-  if(h < 0.0) return -1;
-  float t = (-b - sqrt(h)) / 2.0f;
-  return t;
-}
-
-float3 nSphere(in float3 pos, in float4 sph) {
-  return (pos - sph.xyz)/sph.w;
-}
-
-static float4 sph1 = float4(0.0f, 1.0f, 0.0f, 1.0f);
-float intersect(in float3 ro, in float3 rd, out float resT) {
-  resT = 1000.0f;
-  float id = -1.0f;
-  float tsph = iSphere(ro, rd, sph1);
-  float tpla = iPlane(ro, rd);
-  if (tsph>0.0f) {
-    id = 1.0f;
-    resT = tsph;
-  }
-  if (tpla > 0.0f && tpla < resT){
-    id = 2.0f;
-    resT = tpla;
-  }
-  return id;
-}
-
-[numthreads(8,8,1)]
-void main(uint3 dtid: SV_DispatchThreadID) {
-  uint2 gid = dtid.xy;
-  if (gid.x >= (uint)img_size.x || gid.y > (uint)img_size.y) {
-    return;
-  }
-
-  float3 light = normalize(float3(0.57f, 0.57f, 0.57f));
-  sph1.x = 0.5f * cos(time);
-  sph1.z = 0.5f * sin(time);
-
-  float2 uv = float2((float)gid.x/(float)img_size.x, (float)gid.y/(float)img_size.y);
-  uv.y = 1.0f - uv.y;
-  float2 uv_fix = float2((float)img_size.x/(float)img_size.y, 1.0f);
-
-  float3 ro = float3(0.0f, 0.5f, 3.0f);
-  float3 rd = normalize(float3((-1.0f + 2.0f * uv) * uv_fix, -1.0f));
-
-  float3 color = float3(0.0f, 0.0f, 0.0f);
-
-  float t;
-  float id = intersect(ro, rd, t);
-  if (id > 0.0f && id < 1.5f) {
-    float3 pos = ro + t*rd;
-    float3 nor = nSphere(pos, sph1);
-    float dif = clamp(dot(nor, light), 0.0f, 1.0f);
-    float ao = 0.5 + 0.5*nor.y;
-    color = float3(1.0f, 0.8f, 0.6f)*dif*ao + float3(0.5f, 0.6f, 0.7f)*ao;
-  } else if (id > 1.5f) {
-    float3 pos = ro + t*rd;
-    float3 nor = nPlane(pos);
-    float dif = clamp(dot(nor, light), 0.0f, 1.0f);
-    float amb = smoothstep(0.0f, 2.0f*sph1.w, length(pos.xz-sph1.xz));
-    color = float3(1.0f, 0.8f, 0.6f)*dif + amb*float3(0.5f, 0.6f, 0.7f);
-    color = float3(amb, amb, amb) * 0.7f;
-  }
-
-  cs_out_tex[gid] = float4(color, 1.0f);
-}
-)";
+        _sg_compute_shader_desc.compute_func.source = file_content.data();
 
         _sg_compute_shader_desc.uniform_blocks[0].stage = SG_SHADERSTAGE_COMPUTE;
         _sg_compute_shader_desc.uniform_blocks[0].size = sizeof(cs_params_t);
@@ -170,7 +100,7 @@ void main(uint3 dtid: SV_DispatchThreadID) {
 
         state.compute.pip = sg_make_pipeline(&_compute_pipeline_desc);
 
-        state.compute.params = { 0.0f, {SCREEN_WIDTH, SCREEN_HEIGHT}};
+        state.compute.params = { {0.0f, 0.0f}, {SCREEN_WIDTH, SCREEN_HEIGHT}, {0.0f, 0.0f, 0.0f, 0.0f}};
     }
 
     // graphics
@@ -244,7 +174,8 @@ float4 main(vs_out outp): SV_Target0 {
 void frame() {
     const double dt = sapp_frame_duration();
 
-    state.compute.params.time += (float)dt;
+    state.compute.params.iTime.X += (float)dt;
+    state.compute.params.iTime.Y  = (float)dt;
 
     // compute pass
     sg_pass _compute_pass = { .compute=true, .attachments = state.compute.atts, .label="compute_pass" };
@@ -271,7 +202,33 @@ void cleanup() {
     sg_shutdown();
 }
 
-void input(const sapp_event* event) {}
+void input(const sapp_event* event) {
+    static bool left_button_has_clicked = false;
+    switch (event->type) {
+        case SAPP_EVENTTYPE_MOUSE_DOWN: {
+            if (event->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+                state.compute.params.iMouse.XY = {event->mouse_x, event->mouse_y};
+                left_button_has_clicked = true;
+            }
+            state.compute.params.iMouse.Z = event->mouse_button == SAPP_MOUSEBUTTON_LEFT;
+            state.compute.params.iMouse.W = event->mouse_button == SAPP_MOUSEBUTTON_RIGHT;
+            break;
+        }
+        case SAPP_EVENTTYPE_MOUSE_UP: {
+            if (event->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+                left_button_has_clicked = false;
+            }
+            break;
+        }
+        case SAPP_EVENTTYPE_MOUSE_MOVE: {
+            if (left_button_has_clicked) {
+                state.compute.params.iMouse.XY = {event->mouse_x, event->mouse_y};
+            }
+            break;
+        }
+        default: break;
+    }
+}
 
 int main() {
     sapp_desc desc = {0};
