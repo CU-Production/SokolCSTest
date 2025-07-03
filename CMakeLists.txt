@@ -16,3 +16,9 @@ target_link_libraries(GLnoise PRIVATE sokol HandmadeMath)
 
 add_executable(DXnoise noise_dx.cpp)
 target_link_libraries(DXnoise PRIVATE sokol HandmadeMath)
+
+add_executable(GLraymarching raymarching_gl.cpp)
+target_link_libraries(GLraymarching PRIVATE sokol HandmadeMath)
+
+add_executable(DXraymarching raymarching_dx.cpp)
+target_link_libraries(DXraymarching PRIVATE sokol HandmadeMath)
