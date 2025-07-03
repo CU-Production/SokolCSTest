@@ -8,17 +8,14 @@
 
 #include "HandmadeMath.h"
 
-#include <random>
 #include <vector>
 
 constexpr uint32_t SCREEN_WIDTH = 800;
 constexpr uint32_t SCREEN_HEIGHT = 600;
 
-constexpr uint32_t PARTICLE_COUNT = 8192;
-
 struct cs_params_t{
-    float dt;
-    int32_t num_particles;
+    float time;
+    HMM_Vec2 img_size;
 };
 
 struct particle_t{
@@ -29,14 +26,15 @@ struct particle_t{
 
 struct {
     struct {
-        sg_buffer buf;
+        sg_image img;
+        sg_attachments atts;
         sg_pipeline pip;
+        cs_params_t params;
     } compute;
     struct {
         sg_pipeline pip;
         sg_pass_action pass_action;
-        sg_buffer vbuf;
-        sg_buffer ibuf;
+        sg_sampler smp;
     } graphics;
 } state;
 
@@ -48,63 +46,44 @@ void init() {
 
     // compute
     {
-        std::default_random_engine rndEngine((uint32_t)time(nullptr));
-        std::uniform_real_distribution<float> rndDist(0.0f, 1.0f);
+        sg_image_desc _sg_image_desc{};
+        _sg_image_desc.usage.storage_attachment = true;
+        _sg_image_desc.width = SCREEN_WIDTH;
+        _sg_image_desc.height = SCREEN_HEIGHT;
+        _sg_image_desc.pixel_format = SG_PIXELFORMAT_RGBA8;
+        _sg_image_desc.label = "noise-image";
+        state.compute.img = sg_make_image(&_sg_image_desc);
 
-        std::vector<particle_t> particles{PARTICLE_COUNT};
-        for (uint32_t i = 0; i < PARTICLE_COUNT; i++) {
-            float r = 0.25f * std::sqrt(rndDist(rndEngine));
-            float theta = rndDist(rndEngine) * 2.0f * 3.14159265358979323846f;
-            float x = r * std::cos(theta) * SCREEN_HEIGHT / SCREEN_HEIGHT;
-            float y = r * std::sin(theta);
-            particles[i].pos = HMM_V2(x, y);
-            particles[i].vel = HMM_Norm(HMM_V2(x, y)) * 0.25f;
-            particles[i].color = HMM_V4(rndDist(rndEngine), rndDist(rndEngine), rndDist(rndEngine), rndDist(rndEngine));
-        }
-
-        sg_buffer_desc _sg_buffer_desc{};
-        _sg_buffer_desc.usage.storage_buffer = true;
-        _sg_buffer_desc.data.ptr = particles.data();
-        _sg_buffer_desc.data.size = sizeof(particle_t) * PARTICLE_COUNT;
-        _sg_buffer_desc.label = "particle-buffer";
-        state.compute.buf = sg_make_buffer(&_sg_buffer_desc);
+        sg_attachments_desc _sg_attachments_desc{};
+        _sg_attachments_desc.storages[0].image = state.compute.img;
+        _sg_attachments_desc.label = "noise-attachments";
+        state.compute.atts = sg_make_attachments(&_sg_attachments_desc);
 
         sg_shader_desc _sg_compute_shader_desc{};
         _sg_compute_shader_desc.compute_func.source = R"(
 cbuffer params: register(b0) {
-  float dt;
-  uint num_particles;
+  float time;
+  float2 img_size;
 };
 
-struct particle_t {
-  float2 pos;
-  float2 vel;
-  float4 color;
-};
+RWTexture2D<float4> cs_out_tex: register(u0);
 
-RWStructuredBuffer<particle_t> prt: register(u0);
+float hash12(float2 p)
+{
+  float3 p3 = frac(float3(p.xyx) * .1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return frac((p3.x + p3.y) * p3.z);
+}
 
-[numthreads(64,1,1)]
+[numthreads(8,8,1)]
 void main(uint3 dtid: SV_DispatchThreadID) {
-  uint idx = dtid.x;;
-  if (idx >= num_particles) {
+  uint2 gid = dtid.xy;
+  if (gid.x >= (uint)img_size.x || gid.y > (uint)img_size.y) {
     return;
   }
 
-  float2 pos = prt[idx].pos;
-  float2 vel = prt[idx].vel;
-  pos = pos + vel * dt;
-
-  // Flip movement at window border
-  if ( (pos.x <= -1.0) || (pos.x >= 1.0) ) {
-      vel.x *= -1.0;
-  }
-  if ( (pos.y <= -1.0) || (pos.y >= 1.0) ) {
-      vel.y *= -1.0;
-  }
-
-  prt[idx].pos = pos;
-  prt[idx].vel = vel;
+  float2 p = float2(gid + time);
+  cs_out_tex[gid] = float4(hash12(p), hash12(p + (0.1f).xx), hash12(p + (0.2f).xx), 1.0f);
 }
 )";
 
@@ -112,9 +91,11 @@ void main(uint3 dtid: SV_DispatchThreadID) {
         _sg_compute_shader_desc.uniform_blocks[0].size = sizeof(cs_params_t);
         _sg_compute_shader_desc.uniform_blocks[0].hlsl_register_b_n = 0;
 
-        _sg_compute_shader_desc.storage_buffers[0].stage = SG_SHADERSTAGE_COMPUTE;
-        _sg_compute_shader_desc.storage_buffers[0].readonly = false;
-        _sg_compute_shader_desc.storage_buffers[0].hlsl_register_u_n = 0;
+        _sg_compute_shader_desc.storage_images[0].stage = SG_SHADERSTAGE_COMPUTE;
+        _sg_compute_shader_desc.storage_images[0].image_type = SG_IMAGETYPE_2D;
+        _sg_compute_shader_desc.storage_images[0].access_format = SG_PIXELFORMAT_RGBA8;
+        // _sg_compute_shader_desc.storage_images[0].writeonly = true;
+        _sg_compute_shader_desc.storage_images[0].hlsl_register_u_n = 0;
 
         _sg_compute_shader_desc.label = "compute-shader";
 
@@ -126,6 +107,8 @@ void main(uint3 dtid: SV_DispatchThreadID) {
         _compute_pipeline_desc.label = "compute-pipeline";
 
         state.compute.pip = sg_make_pipeline(&_compute_pipeline_desc);
+
+        state.compute.params = { 0.0f, {SCREEN_WIDTH, SCREEN_HEIGHT}};
     }
 
     // graphics
@@ -156,20 +139,28 @@ vs_out main(uint gl_VertexID: SV_VertexID) {
 }
 )";
         _shader_desc.fragment_func.source = R"(
+Texture2D<float4> disp_tex: register(t0);
+SamplerState disp_smp: register(s0);
+
 struct vs_out {
   float4 pos: SV_Position;
   float2 uv: TEXCOORD0;
 };
 
 float4 main(vs_out outp): SV_Target0 {
-  return float4(outp.uv, 0.0f, 1.0f);
+  return float4(disp_tex.Sample(disp_smp, outp.uv).rgb, 1.0f);
 }
 )";
-        _shader_desc.storage_buffers[0].stage = SG_SHADERSTAGE_VERTEX;
-        _shader_desc.storage_buffers[0].readonly = true;
-        _shader_desc.storage_buffers[0].hlsl_register_t_n = 0;
 
         _shader_desc.label = "fragment-shader";
+        _shader_desc.images[0].stage = SG_SHADERSTAGE_FRAGMENT;
+        _shader_desc.images[0].image_type = SG_IMAGETYPE_2D;
+        _shader_desc.images[0].sample_type = SG_IMAGESAMPLETYPE_FLOAT;
+        _shader_desc.samplers[0].stage = SG_SHADERSTAGE_FRAGMENT;
+        _shader_desc.samplers[0].sampler_type = SG_SAMPLERTYPE_FILTERING;
+        _shader_desc.image_sampler_pairs[0].stage = SG_SHADERSTAGE_FRAGMENT;
+        _shader_desc.image_sampler_pairs[0].image_slot = 0;
+        _shader_desc.image_sampler_pairs[0].sampler_slot = 0;
 
         sg_shader graphics_shd = sg_make_shader(&_shader_desc);
 
@@ -179,31 +170,33 @@ float4 main(vs_out outp): SV_Target0 {
         state.graphics.pip = sg_make_pipeline(&_pipeline_desc);
 
         state.graphics.pass_action.colors[0] = { .load_action=SG_LOADACTION_CLEAR, .clear_value={0.2f, 0.3f, 0.3f, 1.0f } };
+
+        sg_sampler_desc _sg_sampler_desc{};
+        _sg_sampler_desc.min_filter = SG_FILTER_LINEAR;
+        _sg_sampler_desc.mag_filter = SG_FILTER_LINEAR;
+        _sg_sampler_desc.label = "Linear sampler";
+        state.graphics.smp = sg_make_sampler(&_sg_sampler_desc);
     }
-
-
  }
 
 void frame() {
     const double dt = sapp_frame_duration();
 
-    const cs_params_t cs_params = { (float)dt, PARTICLE_COUNT};
+    state.compute.params.time += (float)dt;
 
     // compute pass
-    sg_bindings _compute_bindings{};
-    _compute_bindings.storage_buffers[0] = state.compute.buf;
-    sg_pass _compute_pass = { .compute=true, .label="compute_pass" };
+    sg_pass _compute_pass = { .compute=true, .attachments = state.compute.atts, .label="compute_pass" };
     sg_begin_pass(&_compute_pass);
     sg_apply_pipeline(state.compute.pip);
-    sg_apply_bindings(_compute_bindings);
-    sg_apply_uniforms(0, SG_RANGE(cs_params));
-    sg_dispatch((PARTICLE_COUNT + 63)/64, 1, 1);
+    sg_apply_uniforms(0, SG_RANGE(state.compute.params));
+    sg_dispatch((SCREEN_WIDTH + 7)/8, (SCREEN_HEIGHT + 7)/8, 1);
     sg_end_pass();
 
     // graphics pass
     sg_bindings _graphics_bindings{};
-    _graphics_bindings.storage_buffers[0] = state.compute.buf;
-    sg_pass _graphics_pass = { .action=state.graphics.pass_action, .swapchain=sglue_swapchain() };
+    _graphics_bindings.images[0] = state.compute.img;
+    _graphics_bindings.samplers[0] = state.graphics.smp;
+    sg_pass _graphics_pass = { .action=state.graphics.pass_action, .swapchain=sglue_swapchain(), .label="render-pass"  };
     sg_begin_pass(&_graphics_pass);
     sg_apply_pipeline(state.graphics.pip);
     sg_apply_bindings(_graphics_bindings);

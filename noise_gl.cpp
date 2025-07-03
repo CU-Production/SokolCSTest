@@ -8,17 +8,14 @@
 
 #include "HandmadeMath.h"
 
-#include <random>
 #include <vector>
 
 constexpr uint32_t SCREEN_WIDTH = 800;
 constexpr uint32_t SCREEN_HEIGHT = 600;
 
-constexpr uint32_t PARTICLE_COUNT = 8192;
-
 struct cs_params_t{
-    float dt;
-    int32_t num_particles;
+    float time;
+    HMM_Vec2 img_size;
 };
 
 struct particle_t{
@@ -29,14 +26,17 @@ struct particle_t{
 
 struct {
     struct {
-        sg_buffer buf;
+        sg_image img;
+        sg_attachments atts;
         sg_pipeline pip;
+        cs_params_t params;
     } compute;
     struct {
         sg_pipeline pip;
         sg_pass_action pass_action;
         sg_buffer vbuf;
         sg_buffer ibuf;
+        sg_sampler smp;
     } graphics;
 } state;
 
@@ -48,75 +48,56 @@ void init() {
 
     // compute
     {
-        std::default_random_engine rndEngine((uint32_t)time(nullptr));
-        std::uniform_real_distribution<float> rndDist(0.0f, 1.0f);
+        sg_image_desc _sg_image_desc{};
+        _sg_image_desc.usage.storage_attachment = true;
+        _sg_image_desc.width = SCREEN_WIDTH;
+        _sg_image_desc.height = SCREEN_HEIGHT;
+        _sg_image_desc.pixel_format = SG_PIXELFORMAT_RGBA8;
+        _sg_image_desc.label = "noise-image";
+        state.compute.img = sg_make_image(&_sg_image_desc);
 
-        std::vector<particle_t> particles{PARTICLE_COUNT};
-        for (uint32_t i = 0; i < PARTICLE_COUNT; i++) {
-            float r = 0.25f * std::sqrt(rndDist(rndEngine));
-            float theta = rndDist(rndEngine) * 2.0f * 3.14159265358979323846f;
-            float x = r * std::cos(theta) * SCREEN_HEIGHT / SCREEN_HEIGHT;
-            float y = r * std::sin(theta);
-            particles[i].pos = HMM_V2(x, y);
-            particles[i].vel = HMM_Norm(HMM_V2(x, y)) * 0.25f;
-            particles[i].color = HMM_V4(rndDist(rndEngine), rndDist(rndEngine), rndDist(rndEngine), rndDist(rndEngine));
-        }
-
-        sg_buffer_desc _sg_buffer_desc{};
-        _sg_buffer_desc.usage.storage_buffer = true;
-        _sg_buffer_desc.data.ptr = particles.data();
-        _sg_buffer_desc.data.size = sizeof(particle_t) * PARTICLE_COUNT;
-        _sg_buffer_desc.label = "particle-buffer";
-        state.compute.buf = sg_make_buffer(&_sg_buffer_desc);
+        sg_attachments_desc _sg_attachments_desc{};
+        _sg_attachments_desc.storages[0].image = state.compute.img;
+        _sg_attachments_desc.label = "noise-attachments";
+        state.compute.atts = sg_make_attachments(&_sg_attachments_desc);
 
         sg_shader_desc _sg_compute_shader_desc{};
         _sg_compute_shader_desc.compute_func.source = R"(
 #version 430
-uniform float dt;
-uniform int num_particles;
+uniform float time;
+uniform vec2 img_size;
 
-struct particle_t {
-  vec2 pos;
-  vec2 vel;
-  vec4 color;
-};
+layout(binding=0, rgba8) uniform writeonly image2D cs_out_tex;
+layout(local_size_x=8, local_size_y=8, local_size_y=1) in;
 
-layout(std430, binding=0) buffer ssbo {
-  particle_t prt[];
-};
+float hash12(vec2 p)
+{
+  vec3 p3 = fract(vec3(p.xyx) * .1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
 
-layout(local_size_x=64, local_size_y=1, local_size_y=1) in;
 void main() {
-  uint idx = gl_GlobalInvocationID.x;
-  if (idx >= num_particles) {
+  uvec2 gid = gl_GlobalInvocationID.xy;
+  if (gid.x >= img_size.x || gid.y > img_size.y) {
     return;
   }
 
-  vec2 pos = prt[idx].pos;
-  vec2 vel = prt[idx].vel;
-  pos = pos + vel * dt;
-
-  // Flip movement at window border
-  if ( (pos.x <= -1.0) || (pos.x >= 1.0) ) {
-      vel.x *= -1.0;
-  }
-  if ( (pos.y <= -1.0) || (pos.y >= 1.0) ) {
-      vel.y *= -1.0;
-  }
-
-  prt[idx].pos = pos;
-  prt[idx].vel = vel;
+  vec2 p = vec2(gl_GlobalInvocationID.xy + time);
+  imageStore(cs_out_tex, ivec2(gl_GlobalInvocationID.xy), vec4(hash12(p), hash12(p + (0.1f).xx), hash12(p + (0.2f).xx), 1.0f));
 }
 )";
 
         _sg_compute_shader_desc.uniform_blocks[0].stage = SG_SHADERSTAGE_COMPUTE;
         _sg_compute_shader_desc.uniform_blocks[0].size = sizeof(cs_params_t);
-        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[0] = { .type = SG_UNIFORMTYPE_FLOAT, .glsl_name = "dt",  };
-        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[1] = { .type = SG_UNIFORMTYPE_INT, .glsl_name = "num_particles",  };
+        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[0] = { .type = SG_UNIFORMTYPE_FLOAT, .glsl_name = "time",  };
+        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[1] = { .type = SG_UNIFORMTYPE_FLOAT2, .glsl_name = "img_size",  };
 
-        _sg_compute_shader_desc.storage_buffers[0].stage = SG_SHADERSTAGE_COMPUTE;
-        _sg_compute_shader_desc.storage_buffers[0].readonly = false;
-        _sg_compute_shader_desc.storage_buffers[0].glsl_binding_n = 0;
+        _sg_compute_shader_desc.storage_images[0].stage = SG_SHADERSTAGE_COMPUTE;
+        _sg_compute_shader_desc.storage_images[0].image_type = SG_IMAGETYPE_2D;
+        _sg_compute_shader_desc.storage_images[0].access_format = SG_PIXELFORMAT_RGBA8;
+        _sg_compute_shader_desc.storage_images[0].writeonly = true;
+        _sg_compute_shader_desc.storage_images[0].glsl_binding_n = 0;
 
         _sg_compute_shader_desc.label = "compute-shader";
 
@@ -128,6 +109,8 @@ void main() {
         _compute_pipeline_desc.label = "compute-pipeline";
 
         state.compute.pip = sg_make_pipeline(&_compute_pipeline_desc);
+
+        state.compute.params = { 0.0f, {SCREEN_WIDTH, SCREEN_HEIGHT}};
     }
 
     // graphics
@@ -148,17 +131,27 @@ void main() {
 )";
         _shader_desc.fragment_func.source = R"(
 #version 430 core
+layout(binding=0) uniform sampler2D disp_tex;
 layout(location=0) in vec2 vUV;
 out vec4 frag_color;
 
 void main() {
-  frag_color = vec4(vUV, 0.0f, 1.0f);
+  frag_color = vec4(texture(disp_tex, vUV).xyz, 1.0f);
 }
 )";
 
         _shader_desc.label = "fragment-shader";
         _shader_desc.attrs[0].glsl_name = "position";
         _shader_desc.attrs[1].glsl_name = "texcoord0";
+        _shader_desc.images[0].stage = SG_SHADERSTAGE_FRAGMENT;
+        _shader_desc.images[0].image_type = SG_IMAGETYPE_2D;
+        _shader_desc.images[0].sample_type = SG_IMAGESAMPLETYPE_FLOAT;
+        _shader_desc.samplers[0].stage = SG_SHADERSTAGE_FRAGMENT;
+        _shader_desc.samplers[0].sampler_type = SG_SAMPLERTYPE_FILTERING;
+        _shader_desc.image_sampler_pairs[0].stage = SG_SHADERSTAGE_FRAGMENT;
+        _shader_desc.image_sampler_pairs[0].image_slot = 0;
+        _shader_desc.image_sampler_pairs[0].sampler_slot = 0;
+        _shader_desc.image_sampler_pairs[0].glsl_name = "disp_tex";
 
         sg_shader graphics_shd = sg_make_shader(&_shader_desc);
 
@@ -192,30 +185,35 @@ void main() {
         ib_desc.usage.index_buffer = true;
         ib_desc.data = SG_RANGE(indices);
         state.graphics.ibuf = sg_make_buffer(&ib_desc);
+
+        sg_sampler_desc _sg_sampler_desc{};
+        _sg_sampler_desc.min_filter = SG_FILTER_LINEAR;
+        _sg_sampler_desc.mag_filter = SG_FILTER_LINEAR;
+        _sg_sampler_desc.label = "Linear sampler";
+        state.graphics.smp = sg_make_sampler(&_sg_sampler_desc);
     }
  }
 
 void frame() {
     const double dt = sapp_frame_duration();
 
-    const cs_params_t cs_params = { (float)dt, PARTICLE_COUNT};
+    state.compute.params.time += (float)dt;
 
     // compute pass
-    sg_bindings _compute_bindings{};
-    _compute_bindings.storage_buffers[0] = state.compute.buf;
-    sg_pass _compute_pass = { .compute=true, .label="compute_pass" };
+    sg_pass _compute_pass = { .compute=true, .attachments = state.compute.atts, .label="compute_pass" };
     sg_begin_pass(&_compute_pass);
     sg_apply_pipeline(state.compute.pip);
-    sg_apply_bindings(_compute_bindings);
-    sg_apply_uniforms(0, SG_RANGE(cs_params));
-    sg_dispatch((PARTICLE_COUNT + 63)/64, 1, 1);
+    sg_apply_uniforms(0, SG_RANGE(state.compute.params));
+    sg_dispatch((SCREEN_WIDTH + 7)/8, (SCREEN_HEIGHT + 7)/8, 1);
     sg_end_pass();
 
     // graphics pass
     sg_bindings _graphics_bindings{};
     _graphics_bindings.vertex_buffers[0] = state.graphics.vbuf;
     _graphics_bindings.index_buffer = state.graphics.ibuf;
-    sg_pass _graphics_pass = { .action=state.graphics.pass_action, .swapchain=sglue_swapchain() };
+    _graphics_bindings.images[0] = state.compute.img;
+    _graphics_bindings.samplers[0] = state.graphics.smp;
+    sg_pass _graphics_pass = { .action=state.graphics.pass_action, .swapchain=sglue_swapchain(), .label="render-pass"  };
     sg_begin_pass(&_graphics_pass);
     sg_apply_pipeline(state.graphics.pip);
     sg_apply_bindings(_graphics_bindings);
