@@ -1,3 +1,6 @@
+// based on iq's raymarching demo
+// https://www.shadertoy.com/view/Xds3zN
+
 #define SOKOL_IMPL
 #define SOKOL_NO_ENTRY
 #define SOKOL_GLCORE
@@ -9,13 +12,16 @@
 #include "HandmadeMath.h"
 
 #include <vector>
+#include <fstream>
+#include <iostream>
 
 constexpr uint32_t SCREEN_WIDTH = 800;
 constexpr uint32_t SCREEN_HEIGHT = 600;
 
 struct cs_params_t{
-    float time;
-    HMM_Vec2 img_size;
+    HMM_Vec2 iTime;
+    HMM_Vec2 iResolution;
+    HMM_Vec4 iMouse;
 };
 
 struct particle_t{
@@ -59,99 +65,25 @@ void init() {
         _sg_attachments_desc.label = "noise-attachments";
         state.compute.atts = sg_make_attachments(&_sg_attachments_desc);
 
+        std::ifstream file("raymarching_gl.glsl", std::ios::ate);
+        if (!file.is_open()) {
+            std::cerr << "Could not open file " << __FILE__ << " at line " << __LINE__ << std::endl;
+            std::exit(1);
+        }
+        size_t file_size = (size_t)file.tellg();
+        std::vector<char> file_content(file_size);
+        file.seekg(0);
+        file.read(file_content.data(), file_size);
+        file.close();
+
         sg_shader_desc _sg_compute_shader_desc{};
-        _sg_compute_shader_desc.compute_func.source = R"(
-#version 430
-uniform float time;
-uniform vec2 img_size;
-
-layout(binding=0, rgba8) uniform writeonly image2D cs_out_tex;
-layout(local_size_x=8, local_size_y=8, local_size_y=1) in;
-
-float iPlane(in vec3 ro, in vec3 rd) {
-  return -ro.y/rd.y;
-}
-
-vec3 nPlane(in vec3 pos) {
-  return vec3(0.0f, 1.0f, 0.0f);
-}
-
-float iSphere(in vec3 ro, in vec3 rd, in vec4 sph) {
-  float r = sph.w;
-  vec3 oc = ro - sph.xyz;
-  float b = 2.0f * dot(oc, rd);
-  float c = dot(oc, oc) - r*r;
-  float h = b*b - 4.0*c;
-  if(h < 0.0) return -1;
-  float t = (-b - sqrt(h)) / 2.0f;
-  return t;
-}
-
-vec3 nSphere(in vec3 pos, in vec4 sph) {
-  return (pos - sph.xyz)/sph.w;
-}
-
-vec4 sph1 = vec4(0.0f, 1.0f, 0.0f, 1.0f);
-float intersect(in vec3 ro, in vec3 rd, out float resT) {
-  resT = 1000.0f;
-  float id = -1.0f;
-  float tsph = iSphere(ro, rd, sph1);
-  float tpla = iPlane(ro, rd);
-  if (tsph>0.0f) {
-    id = 1.0f;
-    resT = tsph;
-  }
-  if (tpla > 0.0f && tpla < resT){
-    id = 2.0f;
-    resT = tpla;
-  }
-  return id;
-}
-
-void main() {
-  uvec2 gid = gl_GlobalInvocationID.xy;
-  if (gid.x >= img_size.x || gid.y > img_size.y) {
-    return;
-  }
-
-  vec3 light = normalize(vec3(0.57f, 0.57f, 0.57f));
-  sph1.x = 0.5f * cos(time);
-  sph1.z = 0.5f * sin(time);
-
-  vec2 uv = vec2(float(gid.x)/float(img_size.x), float(gid.y)/float(img_size.y));
-  uv.y = 1.0f - uv.y;
-  vec2 uv_fix = vec2(float(img_size.x)/float(img_size.y), 1.0f);
-
-  vec3 ro = vec3(0.0f, 0.5f, 3.0f);
-  vec3 rd = normalize(vec3((-1.0f + 2.0f * uv) * uv_fix, -1.0f));
-
-  vec3 color = vec3(0.0f, 0.0f, 0.0f);
-
-  float t;
-  float id = intersect(ro, rd, t);
-  if (id > 0.0f && id < 1.5f) {
-    vec3 pos = ro + t*rd;
-    vec3 nor = nSphere(pos, sph1);
-    float dif = clamp(dot(nor, light), 0.0f, 1.0f);
-    float ao = 0.5 + 0.5*nor.y;
-    color = vec3(1.0f, 0.8f, 0.6f)*dif*ao + vec3(0.5f, 0.6f, 0.7f)*ao;
-  } else if (id > 1.5f) {
-    vec3 pos = ro + t*rd;
-    vec3 nor = nPlane(pos);
-    float dif = clamp(dot(nor, light), 0.0f, 1.0f);
-    float amb = smoothstep(0.0f, 2.0f*sph1.w, length(pos.xz-sph1.xz));
-    color = vec3(1.0f, 0.8f, 0.6f)*dif + amb*vec3(0.5f, 0.6f, 0.7f);
-    color = vec3(amb, amb, amb) * 0.7f;
-  }
-
-  imageStore(cs_out_tex, ivec2(gid), vec4(color, 1.0f));
-}
-)";
+        _sg_compute_shader_desc.compute_func.source = file_content.data();
 
         _sg_compute_shader_desc.uniform_blocks[0].stage = SG_SHADERSTAGE_COMPUTE;
         _sg_compute_shader_desc.uniform_blocks[0].size = sizeof(cs_params_t);
-        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[0] = { .type = SG_UNIFORMTYPE_FLOAT, .glsl_name = "time",  };
-        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[1] = { .type = SG_UNIFORMTYPE_FLOAT2, .glsl_name = "img_size",  };
+        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[0] = { .type = SG_UNIFORMTYPE_FLOAT2, .glsl_name = "iTime",  };
+        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[1] = { .type = SG_UNIFORMTYPE_FLOAT2, .glsl_name = "iResolution",  };
+        _sg_compute_shader_desc.uniform_blocks[0].glsl_uniforms[2] = { .type = SG_UNIFORMTYPE_FLOAT4, .glsl_name = "iMouse",  };
 
         _sg_compute_shader_desc.storage_images[0].stage = SG_SHADERSTAGE_COMPUTE;
         _sg_compute_shader_desc.storage_images[0].image_type = SG_IMAGETYPE_2D;
@@ -170,7 +102,7 @@ void main() {
 
         state.compute.pip = sg_make_pipeline(&_compute_pipeline_desc);
 
-        state.compute.params = { 0.0f, {SCREEN_WIDTH, SCREEN_HEIGHT}};
+        state.compute.params = { {0.0f, 0.0f}, {SCREEN_WIDTH, SCREEN_HEIGHT}, {0.0f, 0.0f, 0.0f, 0.0f}};
     }
 
     // graphics
@@ -238,7 +170,8 @@ void main() {
 void frame() {
     const double dt = sapp_frame_duration();
 
-    state.compute.params.time += (float)dt;
+    state.compute.params.iTime.X += (float)dt;
+    state.compute.params.iTime.Y  = (float)dt;
 
     // compute pass
     sg_pass _compute_pass = { .compute=true, .attachments = state.compute.atts, .label="compute_pass" };
@@ -265,7 +198,33 @@ void cleanup() {
     sg_shutdown();
 }
 
-void input(const sapp_event* event) {}
+void input(const sapp_event* event) {
+    static bool left_button_has_clicked = false;
+    switch (event->type) {
+        case SAPP_EVENTTYPE_MOUSE_DOWN: {
+            if (event->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+                state.compute.params.iMouse.XY = {event->mouse_x, event->mouse_y};
+                left_button_has_clicked = true;
+            }
+            state.compute.params.iMouse.Z = event->mouse_button == SAPP_MOUSEBUTTON_LEFT;
+            state.compute.params.iMouse.W = event->mouse_button == SAPP_MOUSEBUTTON_RIGHT;
+            break;
+        }
+        case SAPP_EVENTTYPE_MOUSE_UP: {
+            if (event->mouse_button == SAPP_MOUSEBUTTON_LEFT) {
+                left_button_has_clicked = false;
+            }
+            break;
+        }
+        case SAPP_EVENTTYPE_MOUSE_MOVE: {
+            if (left_button_has_clicked) {
+                state.compute.params.iMouse.XY = {event->mouse_x, event->mouse_y};
+            }
+            break;
+        }
+        default: break;
+    }
+}
 
 int main() {
     sapp_desc desc = {0};
