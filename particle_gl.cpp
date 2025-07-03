@@ -224,7 +224,7 @@ int main() {
     desc.event_cb = input,
     desc.width  = SCREEN_WIDTH,
     desc.height = SCREEN_HEIGHT,
-    desc.window_title = "sokol + puredoom",
+    desc.window_title = "sokol cs particle (GL4.3)",
     desc.icon.sokol_default = true,
     desc.logger.func = slog_func;
     sapp_run(&desc);
