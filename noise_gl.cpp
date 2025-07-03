@@ -34,8 +34,6 @@ struct {
     struct {
         sg_pipeline pip;
         sg_pass_action pass_action;
-        sg_buffer vbuf;
-        sg_buffer ibuf;
         sg_sampler smp;
     } graphics;
 } state;
@@ -118,14 +116,21 @@ void main() {
         sg_shader_desc _shader_desc{};
         _shader_desc.vertex_func.source = R"(
 #version 430 core
-
-layout(location=0) in vec3 position;
-layout(location=1) in vec2 texcoord0;
-
 layout(location=0) out vec2 vUV;
 
+const vec4 vertices[4] = {
+  // pos         uv
+  {-1.0f, -1.0f, 0.0f, 1.0f},
+  { 1.0f, -1.0f, 1.0f, 1.0f},
+  {-1.0f,  1.0f, 0.0f, 0.0f},
+  { 1.0f,  1.0f, 1.0f, 0.0f},
+};
+const int indices[6] = { 0, 1, 2, 1, 3, 2 };
+
 void main() {
-  gl_Position = vec4(position, 1.0f);
+  vec2 position = vertices[indices[gl_VertexID]].xy;
+  vec2 texcoord0 = vertices[indices[gl_VertexID]].zw;
+  gl_Position = vec4(position, 0.0f, 1.0f);
   vUV = texcoord0;
 }
 )";
@@ -141,8 +146,6 @@ void main() {
 )";
 
         _shader_desc.label = "fragment-shader";
-        _shader_desc.attrs[0].glsl_name = "position";
-        _shader_desc.attrs[1].glsl_name = "texcoord0";
         _shader_desc.images[0].stage = SG_SHADERSTAGE_FRAGMENT;
         _shader_desc.images[0].image_type = SG_IMAGETYPE_2D;
         _shader_desc.images[0].sample_type = SG_IMAGESAMPLETYPE_FLOAT;
@@ -158,33 +161,9 @@ void main() {
         sg_pipeline_desc _pipeline_desc{};
         _pipeline_desc.shader = graphics_shd;
         _pipeline_desc.primitive_type = SG_PRIMITIVETYPE_TRIANGLES;
-        _pipeline_desc.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT3;
-        _pipeline_desc.layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT2;
-        _pipeline_desc.index_type = SG_INDEXTYPE_UINT32;
         state.graphics.pip = sg_make_pipeline(&_pipeline_desc);
 
-        state.graphics.pass_action.colors[0] = {
-            .load_action=SG_LOADACTION_CLEAR,
-            .store_action=SG_STOREACTION_STORE,
-            .clear_value={0.2f, 0.3f, 0.3f, 1.0f }
-        };
-
-        const float vertices[] = {
-            // positions     uv
-            -1.0, -1.0, 0.0, 0.0, 1.0,
-            1.0,  -1.0, 0.0, 1.0, 1.0,
-            1.0,  1.0,  0.0, 1.0, 0.0,
-            -1.0, 1.0,  0.0, 0.0, 0.0,
-        };
-        sg_buffer_desc vb_desc = {};
-        vb_desc.data = SG_RANGE(vertices);
-        state.graphics.vbuf = sg_make_buffer(&vb_desc);
-
-        const int indices[] = { 0, 1, 2, 0, 2, 3, };
-        sg_buffer_desc ib_desc = {};
-        ib_desc.usage.index_buffer = true;
-        ib_desc.data = SG_RANGE(indices);
-        state.graphics.ibuf = sg_make_buffer(&ib_desc);
+        state.graphics.pass_action.colors[0] = { .load_action=SG_LOADACTION_CLEAR, .clear_value={0.2f, 0.3f, 0.3f, 1.0f } };
 
         sg_sampler_desc _sg_sampler_desc{};
         _sg_sampler_desc.min_filter = SG_FILTER_LINEAR;
@@ -209,8 +188,6 @@ void frame() {
 
     // graphics pass
     sg_bindings _graphics_bindings{};
-    _graphics_bindings.vertex_buffers[0] = state.graphics.vbuf;
-    _graphics_bindings.index_buffer = state.graphics.ibuf;
     _graphics_bindings.images[0] = state.compute.img;
     _graphics_bindings.samplers[0] = state.graphics.smp;
     sg_pass _graphics_pass = { .action=state.graphics.pass_action, .swapchain=sglue_swapchain(), .label="render-pass"  };
