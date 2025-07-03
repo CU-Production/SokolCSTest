@@ -602,7 +602,11 @@ mat3 setCamera( in vec3 ro, in vec3 ta, float cr )
   vec3 cp = vec3(sin(cr), cos(cr),0.0);
   vec3 cu = normalize( cross(cw,cp) );
   vec3 cv =          ( cross(cu,cw) );
-  return mat3( cu, cv, cw );
+  // return mat3( cu, cv, cw );
+  vec3 r1 = vec3( cu.x, cv.x, cw.x );
+  vec3 r2 = vec3( cu.y, cv.y, cw.y );
+  vec3 r3 = vec3( cu.z, cv.z, cw.z );
+  return mat3( r1, r2, r3 );
 }
 
 [numthreads(8,8,1)]
